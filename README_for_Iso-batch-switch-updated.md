@@ -1,75 +1,97 @@
 # Sulfur Isotope Database Expander for TOUGHREACT / Thermoddem
 
-A Python tool to generate a **strict sulfur isotope-expanded thermodynamic database** from TOUGHREACT / Thermoddem `.dat` files.
+A Python tool to generate a **strict sulfur isotope–expanded thermodynamic database** for use in **TOUGHREACT-based reactive transport modeling**.
 
-This tool enables **simultaneous isotope tracking of reduced sulfur (HS⁻) and oxidized sulfur (SO₄²⁻)** by automatically expanding:
-
-- primary species
-- derived aqueous species
-- mineral / gas phases
-
-into isotope-resolved equivalents.
+This tool enables **explicit tracking of sulfur isotopes (³²S / ³⁴S)** in both reduced and oxidized reservoirs by expanding a standard thermodynamic database into isotope-resolved equivalents.
 
 ---
 
-## Features
+## 🔬 Scientific Context
 
-- Full-database expansion (one run)
-- Supports dual sulfur reservoirs:
-  - HS⁻ → H32S⁻ / H34S⁻
-  - SO₄²⁻ → 32SO₄²⁻ / 34SO₄²⁻
-- Strict mode expansion:
+TOUGHREACT is widely used for multiphase reactive transport, but it does not natively support isotope tracking.
+
+Previous work has demonstrated that isotope fractionation can be incorporated into reactive transport frameworks by modifying thermodynamic properties or extending species definitions. For example, isotope-enabled extensions of TOUGHREACT have been developed for water and carbon isotope systems :contentReference[oaicite:0]{index=0}.
+
+However:
+
+> ⚠️ Applications of sulfur isotope fractionation in TOUGHREACT—especially in hydrothermal mineral systems—remain extremely limited.
+
+This tool provides a generalized and automated framework to implement isotope-enabled thermodynamic databases, enabling:
+
+- equilibrium isotope fractionation modeling  
+- coupling with hydrothermal reactive transport  
+- extension toward ore-forming systems  
+
+---
+
+## 🚀 Features
+
+- Full-database expansion (single run)
+- Dual sulfur reservoirs supported:
+  - HS⁻ → H³²S⁻ / H³⁴S⁻  
+  - SO₄²⁻ → ³²SO₄²⁻ / ³⁴SO₄²⁻  
+- Strict combinatorial expansion:
   - No sulfur → 1 species
   - One sulfur basis → 2 isotopic species
-  - Two sulfur bases → 4 isotopic combinations
-- Handles:
-  - primary species (single-line)
-  - derived species (3-line blocks)
-  - minerals / gases (3–4 line blocks)
-- Optional fractionation (alpha) support for minerals
-- Consistent naming convention for isotope variants
+  - Two sulfur bases → 4 combinations
+- Supports:
+  - primary species (1-line)
+  - derived aqueous species (3-line blocks)
+  - minerals and gases (3–4 line blocks)
+- Optional equilibrium fractionation via **logK perturbation**
+- Consistent and traceable isotope naming scheme
 
 ---
 
-## Input / Output
+## 📥 Input / 📤 Output
 
 ### Input
 
-A TOUGHREACT-compatible thermodynamic database, for example:
+Standard TOUGHREACT-compatible thermodynamic database:
 
+```text
 thdem1214tr3hs5i.dat
+```
 
 ### Output
 
-A fully expanded isotope-aware database:
+Expanded isotope-enabled database:
 
+```text
 thdem1214tr3hs5i_S_iso_strict.dat
+```
 
 ---
 
-## Usage
+## ⚙️ Usage
 
 Run:
 
+```bash
 python expand_sulfur_isotope_db_strict.py
+```
 
-Modify settings inside the script:
+Modify in script:
 
+```python
 INPUT_DB = "your_input.dat"
 OUTPUT_DB = "your_output.dat"
+```
 
 ---
 
-## Isotope Definition
+## 🧪 Isotope Definition
 
-Default:
+Default mapping:
 
-HS-   → H32S- / H34S-  
-SO4-2 → 32SO4-2 / 34SO4-2  
+```text
+HS-   → H32S- / H34S-
+SO4-2 → 32SO4-2 / 34SO4-2
+```
 
 ---
 
-## Expansion Logic (Strict Mode)
+## 🔁 Expansion Logic (Strict Mode)
 
 | Reaction contains | Output |
 |------------------|--------|
@@ -78,55 +100,115 @@ SO4-2 → 32SO4-2 / 34SO4-2
 | SO₄²⁻ only       | 2 blocks |
 | HS⁻ + SO₄²⁻      | 4 blocks |
 
-Example:
+### Example
 
+```text
 Hg2+2 + SO4-2 + HS-
+```
 
-→
+↓
 
+```text
 Hg2+2__HS32__SO432  
 Hg2+2__HS34__SO432  
 Hg2+2__HS32__SO434  
 Hg2+2__HS34__SO434  
+```
 
 ---
 
-## Fractionation (optional)
+## ⚖️ Isotope Fractionation (Optional)
 
-Example:
+Fractionation is introduced via equilibrium constant perturbation:
 
+```text
+logK_heavy = logK_original - log10(alpha)
+```
+
+where:
+
+- α = equilibrium isotope fractionation factor  
+- defined as mineral–fluid ratio:
+
+```text
+alpha = (34S/32S)_mineral / (34S/32S)_fluid
+```
+
+This formulation reflects standard equilibrium isotope fractionation theory, where isotopes partition between phases due to differences in bonding energy :contentReference[oaicite:1]{index=1}.
+
+### Example
+
+```python
 ALPHA_RULES = {
     "Pyrite": {"HS-": 1.001},
     "Anhydrite": {"SO4-2": 1.002},
 }
+```
 
-Applied as:
-
-logK_new = logK_original - log10(alpha)
-
-Only affects heavy isotope variants.
+✔ Only applied to heavy isotope variants  
+✔ Multiple sulfur bases are treated independently (additive in log-space)
 
 ---
 
-## Notes
+## ⚠️ Important Assumptions
 
-- This tool modifies thermodynamic databases, not simulation inputs
-- chemical.inp must be updated manually
-- database size increases significantly (2–4×)
-- mixed HS⁻ + SO₄²⁻ reactions represent mixed sulfur sources
+- Fractionation is treated as equilibrium-only  
+- α is assumed constant (temperature-independent) unless user modifies  
+- No explicit isotope mass balance tracking  
+- No kinetic isotope fractionation (e.g., microbial processes)  
 
 ---
 
-## Recommended Workflow
+## 🧠 Limitations
 
-1. Prepare original database  
+- TOUGHREACT does not natively support isotopes  
+- Isotope effects are introduced indirectly via thermodynamic shifts  
+- Database size increases significantly (2×–4×)  
+- Mixed HS⁻ + SO₄²⁻ reactions may represent non-physical mixing pathways if not carefully interpreted  
+
+---
+
+## 🧩 Recommended Workflow
+
+1. Prepare original thermodynamic database  
 2. Run expansion script  
-3. Validate output (structure, species, consistency)  
-4. Update chemical.inp  
-5. Run TOUGHREACT  
+3. Validate output (format + species consistency)  
+4. Update `chemical.inp` manually  
+5. Run TOUGHREACT simulation  
+6. Post-process isotope signals (δ³⁴S)  
 
 ---
 
-## Author
+## 🔭 Advanced Extensions (Future Work)
 
-Developed for isotope-enabled hydrothermal system modeling.
+Temperature-dependent fractionation:
+
+```text
+1000 ln(alpha) = A/T^2 + B/T + C
+```
+
+- Kinetic isotope fractionation (e.g., sulfate reduction)  
+- Coupled isotope mass balance tracking  
+- Integration with PHREEQC / CrunchTope benchmarks  
+
+---
+
+## 📌 Positioning
+
+This tool is best understood as:
+
+> A framework for implementing isotope-enabled reactive transport modeling in TOUGHREACT
+
+rather than a standard preprocessing utility.
+
+It is particularly suited for:
+
+- hydrothermal systems  
+- ore-forming processes  
+- water–rock interaction studies  
+
+---
+
+## 👤 Author
+
+Developed for advanced isotope-enabled hydrothermal system modeling.
