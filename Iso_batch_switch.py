@@ -10,7 +10,7 @@ from pathlib import Path
 INPUT_DB = "thdem1214tr3hs5i.dat"
 OUTPUT_DB = "thdem1214tr3hs5i_S_iso_strict.dat"
 
-# Use the naming system already present in your current database
+# Isotope naming already consistent with your current database
 ISOTOPE_BASIS = {
     "HS-": {
         "light": "H32S-",
@@ -22,21 +22,24 @@ ISOTOPE_BASIS = {
     },
 }
 
-# Optional fractionation factors for heavy isotope variants only.
-# Shift applied as: logK_new = logK_old - log10(alpha_heavy)
+# Optional fractionation factors for heavy-isotope variants only.
+# Applied as: logK_new = logK_old - log10(alpha)
 # Example:
-# ALPHA_RULES = {
-#     "Pyrite": {"HS-": 1.0010},
-#     "Anhydrite": {"SO4-2": 1.0020},
-#     "Hg2+2": {"HS-": 1.0005, "SO4-2": 1.0002},
-# }
-ALPHA_RULES = {}
+ALPHA_RULES = {
+    "Pyrite": {"HS-": 1.0010},
+    "Anhydrite": {"SO4-2": 1.0020},
+    "Hg2+2": {"HS-": 1.0005, "SO4-2": 1.0002},
+}
+# ALPHA_RULES = {}
 
 # Keep original sulfur basis species in primary section
 KEEP_ORIGINAL_PRIMARY = True
 
-# Insert blank line after each generated block group
+# Insert a blank line after each generated block group
 INSERT_BLANK_LINE_BETWEEN_BLOCKS = True
+
+# TOUGHREACT chemical.inp mineral name limit
+MAX_NAME_LEN = 20
 
 
 # =========================================================
@@ -73,29 +76,32 @@ def first_quoted_name(line: str):
 def safe_float(x: str):
     return float(x.replace("D", "E").replace("d", "e"))
 
-def same_species_name_line(line: str, expected_name: str) -> bool:
-    nm = first_quoted_name(line)
-    return nm == expected_name
-
 
 # =========================================================
-# DATA CLASSES
+# DATA CLASS
 # =========================================================
 
 class ReactionBlock:
     """
-    For derived species and gas/mineral blocks.
-    raw_header_tokens are preserved so the original first-line numeric header
-    remains unchanged except for the species name and stoichiometric species names.
+    section:
+        'derived' or 'mineral'
+
+    header_tokens:
+        derived -> [name, MW, azero, charge, itot]
+        mineral -> [name, xmolw, xmolv, itot]
+
+    stoich_pairs:
+        [(coef_str, species_name), ...]
     """
-    def __init__(self, section, name, header_tokens, stoich_pairs, logk_vals, coeff_vals, extra_line=None):
-        self.section = section              # 'derived' or 'mineral'
+    def __init__(self, section, name, header_tokens, stoich_pairs,
+                 logk_vals, coeff_vals, extra_line=None):
+        self.section = section
         self.name = name
-        self.header_tokens = header_tokens  # list[str], includes first tokens before stoichiometry
-        self.stoich_pairs = stoich_pairs    # list[(coef_str, species_name)]
-        self.logk_vals = logk_vals          # list[str]
-        self.coeff_vals = coeff_vals        # list[str]
-        self.extra_line = extra_line        # optional 4th line for mineral/gas
+        self.header_tokens = header_tokens
+        self.stoich_pairs = stoich_pairs
+        self.logk_vals = logk_vals
+        self.coeff_vals = coeff_vals
+        self.extra_line = extra_line
 
     def used_sulfur_basis(self):
         used = []
@@ -111,8 +117,7 @@ class ReactionBlock:
 
 def is_primary_candidate_line(line: str) -> bool:
     """
-    A primary species line is a single line with a quoted first token and enough fields.
-    Example:
+    Primary species line format is single-line, e.g.
     'SO4-2'  3.15 -2.00 96.064 1.2336E-07 1.17e4  ! comment
     """
     if is_blank(line) or is_comment(line) or is_null(line):
@@ -122,8 +127,8 @@ def is_primary_candidate_line(line: str) -> bool:
 
 def expand_primary_line(line: str):
     """
-    Expand only if the primary species itself is a sulfur basis species.
-    Keep the original line, then append light/heavy copies with renamed first token.
+    Only expand if the primary species itself is a sulfur basis species.
+    Keep original line if KEEP_ORIGINAL_PRIMARY=True, then append isotope variants.
     """
     if not is_primary_candidate_line(line):
         return [line]
@@ -148,12 +153,12 @@ def expand_primary_line(line: str):
 
 
 # =========================================================
-# PARSERS: DERIVED SECTION
+# DERIVED SECTION PARSER
 # =========================================================
 
 def parse_derived_block(lines, i):
     """
-    Derived format:
+    Derived species block:
     line1: 'name' MW azero charge itot coef1 'spec1' coef2 'spec2' ...
     line2: 'name' logK1 logK2 ...
     line3: 'name' c1 c2 c3 c4 c5
@@ -168,14 +173,15 @@ def parse_derived_block(lines, i):
         raise ValueError("Derived line1 too short")
 
     name = strip_q(toks1[0])
-
-    # Derived-specific: token index 4 is itot
     itot = int(float(toks1[4]))
     header_tokens = toks1[:5]
     rest = toks1[5:]
 
     if len(rest) != 2 * itot:
-        raise ValueError(f"Derived stoichiometry mismatch for {name}: expected {2*itot}, got {len(rest)}")
+        raise ValueError(
+            f"Derived stoichiometry mismatch for {name}: "
+            f"expected {2 * itot}, got {len(rest)}"
+        )
 
     pairs = []
     for j in range(0, len(rest), 2):
@@ -185,6 +191,7 @@ def parse_derived_block(lines, i):
 
     toks2 = split_tokens(l2)
     toks3 = split_tokens(l3)
+
     if len(toks2) < 2 or len(toks3) < 2:
         raise ValueError(f"Derived block incomplete for {name}")
 
@@ -206,12 +213,12 @@ def parse_derived_block(lines, i):
 
 
 # =========================================================
-# PARSERS: MINERAL / GAS SECTION
+# MINERAL / GAS SECTION PARSER
 # =========================================================
 
 def parse_mineral_block(lines, i):
     """
-    Mineral/gas format:
+    Mineral/gas block:
     line1: 'name' xmolw xmolv itot coef1 'spec1' coef2 'spec2' ...
     line2: 'name' logK...
     line3: 'name' coeff...
@@ -227,14 +234,15 @@ def parse_mineral_block(lines, i):
         raise ValueError("Mineral line1 too short")
 
     name = strip_q(toks1[0])
-
-    # Mineral-specific: token index 3 is itot
     itot = int(float(toks1[3]))
     header_tokens = toks1[:4]
     rest = toks1[4:]
 
     if len(rest) != 2 * itot:
-        raise ValueError(f"Mineral stoichiometry mismatch for {name}: expected {2*itot}, got {len(rest)}")
+        raise ValueError(
+            f"Mineral stoichiometry mismatch for {name}: "
+            f"expected {2 * itot}, got {len(rest)}"
+        )
 
     pairs = []
     for j in range(0, len(rest), 2):
@@ -244,6 +252,7 @@ def parse_mineral_block(lines, i):
 
     toks2 = split_tokens(l2)
     toks3 = split_tokens(l3)
+
     if len(toks2) < 2 or len(toks3) < 2:
         raise ValueError(f"Mineral block incomplete for {name}")
 
@@ -276,36 +285,88 @@ def parse_mineral_block(lines, i):
 
 
 # =========================================================
-# STRICT ISOTOPIC EXPANSION
+# COMPACT NAMING RULE FOR chemical.inp + .tec UNIQUENESS
 # =========================================================
 
-def state_suffix_part(basis_name: str, state: str) -> str:
-    if basis_name == "HS-":
-        return "HS32" if state == "light" else "HS34"
-    if basis_name == "SO4-2":
-        return "SO432" if state == "light" else "SO434"
-    return f"{basis_name}_{state}"
+def compact_state_prefix(state_map: dict) -> str:
+    """
+    Dual-basis:
+        m22 = HS32 + SO432
+        m24 = HS32 + SO434
+        m42 = HS34 + SO432
+        m44 = HS34 + SO434
+
+    Single-basis:
+        h2 = HS32 only
+        h4 = HS34 only
+        s2 = SO432 only
+        s4 = SO434 only
+    """
+    has_hs = "HS-" in state_map
+    has_so4 = "SO4-2" in state_map
+
+    if has_hs and has_so4:
+        hs_digit = "2" if state_map["HS-"] == "light" else "4"
+        so4_digit = "2" if state_map["SO4-2"] == "light" else "4"
+        return f"m{hs_digit}{so4_digit}"
+
+    if has_hs:
+        hs_digit = "2" if state_map["HS-"] == "light" else "4"
+        return f"h{hs_digit}"
+
+    if has_so4:
+        so4_digit = "2" if state_map["SO4-2"] == "light" else "4"
+        return f"s{so4_digit}"
+
+    return ""
 
 def rename_block_name(base_name: str, state_map: dict) -> str:
+    """
+    Naming rule examples:
+        m22_magnetite
+        m24_magnetite
+        m42_magnetite
+        m44_magnetite
+
+        h2_h2s(aq)
+        h4_h2s(aq)
+
+        s2_anhydrite
+        s4_anhydrite
+
+    Prefix-first naming is safer for .tec output because the distinguishing
+    isotope code appears at the beginning, reducing truncation collisions.
+    """
     if not state_map:
         return base_name
-    parts = [base_name]
-    for basis in sorted(state_map.keys()):
-        parts.append(state_suffix_part(basis, state_map[basis]))
-    return "__".join(parts)
+
+    prefix = compact_state_prefix(state_map)
+    new_name = f"{prefix}_{base_name}"
+
+    if len(new_name) > MAX_NAME_LEN:
+        print(f"[WARN] Name exceeds {MAX_NAME_LEN} chars: {new_name}")
+
+    return new_name
+
+
+# =========================================================
+# STRICT ISOTOPIC EXPANSION
+# =========================================================
 
 def generate_state_combinations(used_basis):
     """
     Strict mode:
-    0 sulfur basis -> 1 block
-    1 sulfur basis -> 2 blocks
-    2 sulfur basis -> 4 blocks
+        no sulfur basis -> 1 block
+        one sulfur basis -> 2 blocks
+        two sulfur bases -> 4 blocks
     """
     if not used_basis:
         return [dict()]
+
+    used_basis = sorted(used_basis)
     combos = []
     for states in product(["light", "heavy"], repeat=len(used_basis)):
-        combos.append(dict(zip(sorted(used_basis), states)))
+        combos.append(dict(zip(used_basis, states)))
     return combos
 
 def replace_stoich_pairs(pairs, state_map):
@@ -320,6 +381,7 @@ def replace_stoich_pairs(pairs, state_map):
 
 def apply_alpha_shift(original_name: str, state_map: dict, logk_vals):
     shift = 0.0
+
     if original_name in ALPHA_RULES:
         for basis, state in state_map.items():
             if state == "heavy":
@@ -349,6 +411,7 @@ def expand_reaction_block(block: ReactionBlock):
         new_name = rename_block_name(block.name, sm)
         new_pairs = replace_stoich_pairs(block.stoich_pairs, sm)
         new_logk = apply_alpha_shift(block.name, sm, block.logk_vals)
+
         expanded.append(
             ReactionBlock(
                 section=block.section,
@@ -360,6 +423,7 @@ def expand_reaction_block(block: ReactionBlock):
                 extra_line=block.extra_line,
             )
         )
+
     return expanded
 
 
@@ -370,30 +434,28 @@ def expand_reaction_block(block: ReactionBlock):
 def format_reaction_block(block: ReactionBlock):
     out = []
 
-    # line1
+    # line 1
     header = block.header_tokens[:]
     header[0] = quote(block.name)
 
-    line1_parts = header[:]
-    # Update itot token from current stoichiometry length
     if block.section == "derived":
-        line1_parts[4] = str(len(block.stoich_pairs))
+        header[4] = str(len(block.stoich_pairs))
     elif block.section == "mineral":
-        line1_parts[3] = str(len(block.stoich_pairs))
+        header[3] = str(len(block.stoich_pairs))
 
+    line1_parts = header[:]
     for coef, spec in block.stoich_pairs:
         line1_parts.append(coef)
         line1_parts.append(quote(spec))
-
     out.append(" ".join(line1_parts) + "\n")
 
-    # line2
+    # line 2
     out.append(" ".join([quote(block.name)] + block.logk_vals) + "\n")
 
-    # line3
+    # line 3
     out.append(" ".join([quote(block.name)] + block.coeff_vals) + "\n")
 
-    # optional line4
+    # optional line 4
     if block.extra_line is not None:
         toks4 = split_tokens(block.extra_line)
         if toks4 and toks4[0].startswith("'"):
@@ -424,17 +486,6 @@ def find_nth_null(lines, start_idx, n):
                 return i
     raise RuntimeError(f"Cannot find the {n}-th null after line {start_idx}")
 
-def looks_like_derived_start(lines, i):
-    if i + 2 >= len(lines):
-        return False
-    if is_blank(lines[i]) or is_comment(lines[i]) or is_null(lines[i]):
-        return False
-    try:
-        parse_derived_block(lines, i)
-        return True
-    except Exception:
-        return False
-
 def looks_like_mineral_start(lines, i):
     if i + 2 >= len(lines):
         return False
@@ -460,8 +511,8 @@ def process_database():
     # header_end
     # temp line = header_end + 1
     # primary section until first null after temp line
-    # derived until second null
-    # mineral/gas after second null
+    # derived section until second null
+    # mineral/gas section after second null
     first_null = find_nth_null(lines, header_end + 2, 1)
     second_null = find_nth_null(lines, header_end + 2, 2)
 
@@ -490,7 +541,6 @@ def process_database():
             out.extend(expand_primary_line(line))
         i += 1
 
-    # write first null
     out.append(lines[first_null])
 
     # -----------------------------------------------------
@@ -515,7 +565,6 @@ def process_database():
 
         i += step
 
-    # write second null
     out.append(lines[second_null])
 
     # -----------------------------------------------------
@@ -541,7 +590,6 @@ def process_database():
 
             i += step
         else:
-            # fallback: keep untouched
             out.append(line)
             i += 1
 
